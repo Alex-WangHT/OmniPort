@@ -1,6 +1,8 @@
 import dearpygui.dearpygui as dpg
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
+import os
+import sys
 from serial_manager import (
     SerialManager, 
     SerialConfig, 
@@ -21,7 +23,75 @@ class SerialDebugAssistant:
         self.send_encoding: str = "utf-8"
         self.receive_encoding: str = "utf-8"
         self._ui_ready: bool = False
+        self._default_font: Optional[int] = None
         
+    def _get_chinese_font_paths(self) -> List[str]:
+        font_paths = []
+        
+        if sys.platform == "win32":
+            windir = os.environ.get("WINDIR", "C:\\Windows")
+            fonts_dir = os.path.join(windir, "Fonts")
+            
+            common_fonts = [
+                "msyh.ttc",
+                "msyhbd.ttc",
+                "simhei.ttf",
+                "simsun.ttc",
+                "simkai.ttf",
+                "simfang.ttf",
+                "Deng.ttf",
+                "Dengb.ttf",
+            ]
+            
+            for font_name in common_fonts:
+                font_path = os.path.join(fonts_dir, font_name)
+                if os.path.exists(font_path):
+                    font_paths.append(font_path)
+        
+        elif sys.platform == "darwin":
+            mac_fonts = [
+                "/System/Library/Fonts/PingFang.ttc",
+                "/System/Library/Fonts/STHeiti Light.ttc",
+                "/System/Library/Fonts/Helvetica.ttc",
+            ]
+            
+            for font_path in mac_fonts:
+                if os.path.exists(font_path):
+                    font_paths.append(font_path)
+        
+        elif sys.platform.startswith("linux"):
+            linux_fonts = [
+                "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+                "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+                "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+            ]
+            
+            for font_path in linux_fonts:
+                if os.path.exists(font_path):
+                    font_paths.append(font_path)
+        
+        return font_paths
+    
+    def _load_fonts(self) -> None:
+        font_paths = self._get_chinese_font_paths()
+        
+        if font_paths:
+            for font_path in font_paths:
+                try:
+                    with dpg.font_registry():
+                        self._default_font = dpg.add_font(font_path, 16)
+                        dpg.bind_font(self._default_font)
+                    return
+                except Exception:
+                    continue
+        
+        try:
+            with dpg.font_registry():
+                self._default_font = dpg.add_font("C:/Windows/Fonts/msyh.ttc", 16)
+                dpg.bind_font(self._default_font)
+        except Exception:
+            pass
+    
     def _setup_callbacks(self) -> None:
         self.serial_manager.add_data_received_callback(self._on_data_received)
         self.serial_manager.add_connection_status_callback(self._on_connection_status_changed)
@@ -93,7 +163,7 @@ class SerialDebugAssistant:
                 
                 if self.auto_scroll and self._is_item_valid("receive_window"):
                     dpg.set_y_scroll("receive_window", -1.0)
-        except Exception as e:
+        except Exception:
             pass
     
     def _on_connection_status_changed(self, connected: bool) -> None:
@@ -367,10 +437,18 @@ class SerialDebugAssistant:
         self._ui_ready = True
     
     def run(self) -> None:
+        if sys.platform == "win32":
+            try:
+                sys.stdout.reconfigure(encoding='utf-8')
+                sys.stderr.reconfigure(encoding='utf-8')
+            except Exception:
+                pass
+        
         dpg.create_context()
         dpg.create_viewport(title="串口调试助手 - OmniPort", width=920, height=720)
         dpg.setup_dearpygui()
         
+        self._load_fonts()
         self._setup_theme()
         self.create_ui()
         self._setup_callbacks()
