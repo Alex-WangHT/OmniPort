@@ -20,9 +20,7 @@ class SerialDebugAssistant:
         self.display_mode: str = "text"
         self.send_encoding: str = "utf-8"
         self.receive_encoding: str = "utf-8"
-        
-        self._setup_callbacks()
-        self._setup_theme()
+        self._ui_ready: bool = False
         
     def _setup_callbacks(self) -> None:
         self.serial_manager.add_data_received_callback(self._on_data_received)
@@ -45,6 +43,12 @@ class SerialDebugAssistant:
                 dpg.add_theme_style(dpg.mvStyleVar_FramePadding, 4, 4)
                 
         dpg.bind_theme(self.global_theme)
+    
+    def _is_item_valid(self, tag: str) -> bool:
+        try:
+            return dpg.does_item_exist(tag)
+        except Exception:
+            return False
     
     def _get_timestamp(self) -> str:
         if self.show_timestamp:
@@ -69,132 +73,195 @@ class SerialDebugAssistant:
         return text.encode(self.send_encoding, errors='replace')
     
     def _on_data_received(self, data: bytes) -> None:
+        if not self._ui_ready:
+            return
+        
         try:
             display_text = self._bytes_to_display(data)
             timestamp = self._get_timestamp()
             
             full_text = f"{timestamp}{display_text}"
             
-            current_text = dpg.get_value("receive_text")
-            if current_text:
-                current_text += full_text
-            else:
-                current_text = full_text
+            if self._is_item_valid("receive_text"):
+                current_text = dpg.get_value("receive_text")
+                if current_text:
+                    current_text += full_text
+                else:
+                    current_text = full_text
+                
+                dpg.set_value("receive_text", current_text)
+                
+                if self.auto_scroll and self._is_item_valid("receive_window"):
+                    dpg.set_y_scroll("receive_window", -1.0)
+        except Exception as e:
+            pass
+    
+    def _on_connection_status_changed(self, connected: bool) -> None:
+        if not self._ui_ready:
+            return
+        
+        try:
+            self.is_connected = connected
             
-            dpg.set_value("receive_text", current_text)
+            if self._is_item_valid("connection_status"):
+                dpg.set_value("connection_status", 
+                              f"状态: {'已连接' if connected else '已断开'}")
             
-            if self.auto_scroll:
-                dpg.set_y_scroll("receive_window", -1.0)
+            if self._is_item_valid("connection_indicator"):
+                dpg.set_value("connection_indicator", 
+                              (0, 255, 0, 255) if connected else (255, 0, 0, 255))
+            
+            if self._is_item_valid("connect_button"):
+                dpg.configure_item("connect_button", 
+                                  label="断开连接" if connected else "打开串口")
+            
+            for tag in ["port_combo", "baudrate_combo", "data_bits_combo", 
+                       "parity_combo", "stop_bits_combo"]:
+                if self._is_item_valid(tag):
+                    dpg.configure_item(tag, enabled=not connected)
+        except Exception:
+            pass
+    
+    def _on_error(self, error: Exception) -> None:
+        if not self._ui_ready:
+            return
+        
+        try:
+            error_msg = f"错误: {str(error)}\n"
+            
+            if self._is_item_valid("receive_text"):
+                current_text = dpg.get_value("receive_text")
+                if current_text:
+                    current_text += error_msg
+                else:
+                    current_text = error_msg
+                dpg.set_value("receive_text", current_text)
+        except Exception:
+            pass
+    
+    def refresh_ports(self) -> None:
+        if not self._ui_ready:
+            return
+        
+        try:
+            ports = self.serial_manager.get_available_ports()
+            
+            if self._is_item_valid("port_combo"):
+                dpg.configure_item("port_combo", items=ports)
+                if ports and not dpg.get_value("port_combo"):
+                    dpg.set_value("port_combo", ports[0])
+        except Exception:
+            pass
+    
+    def connect_serial(self, sender, app_data) -> None:
+        if not self._ui_ready:
+            return
+        
+        try:
+            if self.is_connected:
+                self.serial_manager.disconnect()
+                return
+            
+            if not self._is_item_valid("port_combo"):
+                return
+            
+            port = dpg.get_value("port_combo")
+            if not port:
+                self._on_error(Exception("请选择串口"))
+                return
+            
+            baudrate = int(dpg.get_value("baudrate_combo"))
+            data_bits_str = dpg.get_value("data_bits_combo")
+            parity_str = dpg.get_value("parity_combo")
+            stop_bits_str = dpg.get_value("stop_bits_combo")
+            
+            data_bits_map = {
+                "5": DataBits.FIVE,
+                "6": DataBits.SIX,
+                "7": DataBits.SEVEN,
+                "8": DataBits.EIGHT
+            }
+            
+            parity_map = {
+                "无": Parity.NONE,
+                "奇校验": Parity.ODD,
+                "偶校验": Parity.EVEN,
+                "MARK": Parity.MARK,
+                "SPACE": Parity.SPACE
+            }
+            
+            stop_bits_map = {
+                "1": StopBits.ONE,
+                "1.5": StopBits.ONE_POINT_FIVE,
+                "2": StopBits.TWO
+            }
+            
+            config = SerialConfig(
+                port=port,
+                baudrate=baudrate,
+                data_bits=data_bits_map.get(data_bits_str, DataBits.EIGHT),
+                parity=parity_map.get(parity_str, Parity.NONE),
+                stop_bits=stop_bits_map.get(stop_bits_str, StopBits.ONE)
+            )
+            
+            self.serial_manager.connect(config)
         except Exception as e:
             self._on_error(e)
     
-    def _on_connection_status_changed(self, connected: bool) -> None:
-        self.is_connected = connected
-        dpg.set_value("connection_status", 
-                       f"状态: {'已连接' if connected else '已断开'}")
-        dpg.set_value("connection_indicator", 
-                       (0, 255, 0, 255) if connected else (255, 0, 0, 255))
-        
-        dpg.configure_item("connect_button", 
-                          label="断开连接" if connected else "打开串口")
-        dpg.configure_item("port_combo", enabled=not connected)
-        dpg.configure_item("baudrate_combo", enabled=not connected)
-        dpg.configure_item("data_bits_combo", enabled=not connected)
-        dpg.configure_item("parity_combo", enabled=not connected)
-        dpg.configure_item("stop_bits_combo", enabled=not connected)
-    
-    def _on_error(self, error: Exception) -> None:
-        error_msg = f"错误: {str(error)}\n"
-        current_text = dpg.get_value("receive_text")
-        if current_text:
-            current_text += error_msg
-        else:
-            current_text = error_msg
-        dpg.set_value("receive_text", current_text)
-    
-    def refresh_ports(self) -> None:
-        ports = self.serial_manager.get_available_ports()
-        dpg.configure_item("port_combo", items=ports)
-        if ports and not dpg.get_value("port_combo"):
-            dpg.set_value("port_combo", ports[0])
-    
-    def connect_serial(self, sender, app_data) -> None:
-        if self.is_connected:
-            self.serial_manager.disconnect()
-            return
-        
-        port = dpg.get_value("port_combo")
-        if not port:
-            self._on_error(Exception("请选择串口"))
-            return
-        
-        baudrate = int(dpg.get_value("baudrate_combo"))
-        data_bits_str = dpg.get_value("data_bits_combo")
-        parity_str = dpg.get_value("parity_combo")
-        stop_bits_str = dpg.get_value("stop_bits_combo")
-        
-        data_bits_map = {
-            "5": DataBits.FIVE,
-            "6": DataBits.SIX,
-            "7": DataBits.SEVEN,
-            "8": DataBits.EIGHT
-        }
-        
-        parity_map = {
-            "无": Parity.NONE,
-            "奇校验": Parity.ODD,
-            "偶校验": Parity.EVEN,
-            "MARK": Parity.MARK,
-            "SPACE": Parity.SPACE
-        }
-        
-        stop_bits_map = {
-            "1": StopBits.ONE,
-            "1.5": StopBits.ONE_POINT_FIVE,
-            "2": StopBits.TWO
-        }
-        
-        config = SerialConfig(
-            port=port,
-            baudrate=baudrate,
-            data_bits=data_bits_map.get(data_bits_str, DataBits.EIGHT),
-            parity=parity_map.get(parity_str, Parity.NONE),
-            stop_bits=stop_bits_map.get(stop_bits_str, StopBits.ONE)
-        )
-        
-        self.serial_manager.connect(config)
-    
     def send_data(self, sender, app_data) -> None:
-        if not self.is_connected:
-            self._on_error(Exception("请先连接串口"))
+        if not self._ui_ready:
             return
         
-        text = dpg.get_value("send_text")
-        if not text:
-            return
-        
-        data = self._display_to_bytes(text)
-        if self.serial_manager.send_data(data):
-            if self.show_timestamp:
-                timestamp = self._get_timestamp()
-                sent_text = f"{timestamp}发送: {text}\n" if not self.send_newline else f"{timestamp}发送: {text}"
-                current_text = dpg.get_value("receive_text")
-                if current_text:
-                    current_text += sent_text
-                else:
-                    current_text = sent_text
-                dpg.set_value("receive_text", current_text)
-                
-                if self.auto_scroll:
-                    dpg.set_y_scroll("receive_window", -1.0)
-        else:
-            self._on_error(Exception("发送失败"))
+        try:
+            if not self.is_connected:
+                self._on_error(Exception("请先连接串口"))
+                return
+            
+            if not self._is_item_valid("send_text"):
+                return
+            
+            text = dpg.get_value("send_text")
+            if not text:
+                return
+            
+            data = self._display_to_bytes(text)
+            if self.serial_manager.send_data(data):
+                if self.show_timestamp and self._is_item_valid("receive_text"):
+                    timestamp = self._get_timestamp()
+                    sent_text = f"{timestamp}发送: {text}\n" if not self.send_newline else f"{timestamp}发送: {text}"
+                    current_text = dpg.get_value("receive_text")
+                    if current_text:
+                        current_text += sent_text
+                    else:
+                        current_text = sent_text
+                    dpg.set_value("receive_text", current_text)
+                    
+                    if self.auto_scroll and self._is_item_valid("receive_window"):
+                        dpg.set_y_scroll("receive_window", -1.0)
+            else:
+                self._on_error(Exception("发送失败"))
+        except Exception as e:
+            self._on_error(e)
     
     def clear_receive(self, sender, app_data) -> None:
-        dpg.set_value("receive_text", "")
+        if not self._ui_ready:
+            return
+        
+        try:
+            if self._is_item_valid("receive_text"):
+                dpg.set_value("receive_text", "")
+        except Exception:
+            pass
     
     def clear_send(self, sender, app_data) -> None:
-        dpg.set_value("send_text", "")
+        if not self._ui_ready:
+            return
+        
+        try:
+            if self._is_item_valid("send_text"):
+                dpg.set_value("send_text", "")
+        except Exception:
+            pass
     
     def toggle_auto_scroll(self, sender, app_data) -> None:
         self.auto_scroll = app_data
@@ -296,13 +363,17 @@ class SerialDebugAssistant:
                         with dpg.group(horizontal=True):
                             dpg.add_button(label="发送", callback=self.send_data, width=100, height=30)
                             dpg.add_button(label="清空发送", callback=self.clear_send)
+        
+        self._ui_ready = True
     
     def run(self) -> None:
         dpg.create_context()
         dpg.create_viewport(title="串口调试助手 - OmniPort", width=920, height=720)
         dpg.setup_dearpygui()
         
+        self._setup_theme()
         self.create_ui()
+        self._setup_callbacks()
         
         dpg.show_viewport()
         dpg.set_primary_window("main_window", True)
